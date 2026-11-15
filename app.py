@@ -1,18 +1,21 @@
 import streamlit as st
 import pandas as pd
 import ast
+import requests
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+
 
 # =========================================================
 # PAGE CONFIG
 # =========================================================
 
 st.set_page_config(
-    page_title="CineMatch - Movie Recommendation",
+    page_title="CineMatch - Movie Recommendation System",
     page_icon="🎬",
     layout="wide"
 )
+
 
 # =========================================================
 # CUSTOM CSS
@@ -21,109 +24,100 @@ st.set_page_config(
 st.markdown("""
 <style>
 
-.stApp {
-    background: linear-gradient(135deg, #0f0f0f, #171717, #0b0b0b);
-    color: white;
+.main {
+    background-color: #0e1117;
 }
 
-.main-title {
+.block-container {
+    padding-top: 2rem;
+    padding-bottom: 2rem;
+}
+
+.title {
     text-align: center;
     font-size: 48px;
     font-weight: 800;
-    margin-top: 20px;
     margin-bottom: 5px;
 }
 
 .subtitle {
     text-align: center;
-    color: #b8b8b8;
-    font-size: 18px;
-    margin-bottom: 35px;
-}
-
-.movie-card {
-    background: linear-gradient(145deg, #242424, #151515);
-    padding: 22px;
-    border-radius: 16px;
-    margin-bottom: 18px;
-    border: 1px solid #333333;
-    box-shadow: 0px 8px 20px rgba(0,0,0,0.35);
-}
-
-.movie-number {
-    font-size: 14px;
     color: #aaaaaa;
+    font-size: 18px;
+    margin-bottom: 30px;
 }
 
-.movie-name {
-    font-size: 21px;
+.movie-title {
+    font-size: 20px;
     font-weight: 700;
-    margin-top: 5px;
+    margin-top: 10px;
 }
 
-.similarity {
-    color: #00d4ff;
+.movie-info {
+    color: #bbbbbb;
+    font-size: 14px;
+}
+
+.stButton > button {
+    width: 100%;
+    border-radius: 10px;
     font-weight: 600;
-    margin-top: 8px;
-}
-
-.info-box {
-    background: #1f1f1f;
-    padding: 18px;
-    border-radius: 14px;
-    border: 1px solid #333333;
-    text-align: center;
-}
-
-.footer {
-    text-align: center;
-    color: #777777;
-    margin-top: 40px;
-    padding: 20px;
 }
 
 </style>
 """, unsafe_allow_html=True)
+
 
 # =========================================================
 # HEADER
 # =========================================================
 
 st.markdown(
-    '<div class="main-title">🎬 CineMatch</div>',
+    '<div class="title">🎬 CineMatch</div>',
     unsafe_allow_html=True
 )
 
 st.markdown(
-    '<div class="subtitle">AI-Powered Movie Recommendation System</div>',
+    '<div class="subtitle">AI Powered Movie Recommendation System</div>',
     unsafe_allow_html=True
 )
 
+
 # =========================================================
-# LOAD DATA
+# LOAD DATASET
 # =========================================================
 
 @st.cache_data
 def load_data():
 
-    df = pd.read_csv("tmdb_5000_movies.csv")
+    movies = pd.read_csv("tmdb_5000_movies.csv")
 
-    df = df[
-        ["title", "genres", "keywords", "overview"]
-    ].copy()
+    required_columns = [
+        "id",
+        "title",
+        "overview",
+        "genres",
+        "keywords",
+        "vote_average"
+    ]
 
-    df = df.dropna(subset=["title"])
+    movies = movies[required_columns]
 
-    return df
+    movies["overview"] = movies["overview"].fillna("")
+    movies["genres"] = movies["genres"].fillna("[]")
+    movies["keywords"] = movies["keywords"].fillna("")
+
+    return movies
 
 
-df = load_data()
+movies = load_data()
+
 
 # =========================================================
-# CONVERT JSON DATA
+# GENRES
 # =========================================================
 
-def get_names(value):
+def convert_genres(value):
 
     try:
 
@@ -132,91 +126,272 @@ def get_names(value):
         if isinstance(data, list):
 
             return " ".join(
-                item["name"].replace(" ", "").lower()
+                item.get("name", "")
                 for item in data
-                if isinstance(item, dict)
-                and "name" in item
             )
+
+        return ""
 
     except:
 
         return ""
 
-    return ""
 
-
-df["genres"] = (
-    df["genres"]
-    .fillna("[]")
-    .apply(get_names)
+movies["genres_text"] = movies["genres"].apply(
+    convert_genres
 )
 
-df["keywords"] = (
-    df["keywords"]
-    .fillna("[]")
-    .apply(get_names)
-)
-
-df["overview"] = (
-    df["overview"]
-    .fillna("")
-)
 
 # =========================================================
-# CREATE TAGS
+# KEYWORDS
 # =========================================================
 
-df["tags"] = (
-    df["genres"]
-    + " "
-    + df["keywords"]
-    + " "
-    + df["overview"]
+def convert_keywords(value):
+
+    try:
+
+        data = ast.literal_eval(value)
+
+        if isinstance(data, list):
+
+            return " ".join(
+                item.get("name", "")
+                for item in data
+            )
+
+        return ""
+
+    except:
+
+        return ""
+
+
+movies["keywords_text"] = movies["keywords"].apply(
+    convert_keywords
 )
+
+
+# =========================================================
+# COMBINE FEATURES
+# =========================================================
+
+movies["combined_features"] = (
+    movies["title"].fillna("") + " " +
+    movies["overview"].fillna("") + " " +
+    movies["genres_text"].fillna("") + " " +
+    movies["keywords_text"].fillna("")
+)
+
 
 # =========================================================
 # MACHINE LEARNING MODEL
 # =========================================================
 
 @st.cache_resource
-def create_model(tags):
+def create_model(data):
 
     vectorizer = TfidfVectorizer(
         stop_words="english",
-        max_features=5000
+        max_features=50000
     )
 
-    vectors = vectorizer.fit_transform(tags)
+    feature_matrix = vectorizer.fit_transform(
+        data["combined_features"]
+    )
 
-    similarity = cosine_similarity(vectors)
+    similarity_matrix = cosine_similarity(
+        feature_matrix
+    )
 
-    return similarity
+    return similarity_matrix
 
 
-similarity = create_model(
-    df["tags"]
+similarity = create_model(movies)
+
+
+# =========================================================
+# TMDB SETTINGS
+# =========================================================
+
+TMDB_CREDENTIAL = st.secrets.get(
+    "TMDB_API_KEY",
+    ""
 )
+
+TMDB_IMAGE_URL = (
+    "https://image.tmdb.org/t/p/w500"
+)
+
+
+# =========================================================
+# TMDB MOVIE DETAILS
+# =========================================================
+
+@st.cache_data(ttl=3600)
+def get_movie_details(movie_title):
+
+    # If API credential is missing
+    if not TMDB_CREDENTIAL:
+
+        return {
+            "poster": None,
+            "rating": None,
+            "overview": None
+        }
+
+    url = (
+        "https://api.themoviedb.org/3/search/movie"
+    )
+
+    params = {
+        "query": movie_title,
+        "language": "en-US"
+    }
+
+    headers = {}
+
+    # -----------------------------------------------------
+    # API READ ACCESS TOKEN
+    # -----------------------------------------------------
+
+    if TMDB_CREDENTIAL.startswith("eyJ"):
+
+        headers["Authorization"] = (
+            "Bearer " + TMDB_CREDENTIAL
+        )
+
+    # -----------------------------------------------------
+    # API KEY
+    # -----------------------------------------------------
+
+    else:
+
+        params["api_key"] = TMDB_CREDENTIAL
+
+    try:
+
+        response = requests.get(
+            url,
+            params=params,
+            headers=headers,
+            timeout=5
+        )
+
+        # -------------------------------------------------
+        # If TMDB gives error
+        # -------------------------------------------------
+
+        if response.status_code != 200:
+
+            return {
+                "poster": None,
+                "rating": None,
+                "overview": None
+            }
+
+        data = response.json()
+
+        results = data.get(
+            "results",
+            []
+        )
+
+        if not results:
+
+            return {
+                "poster": None,
+                "rating": None,
+                "overview": None
+            }
+
+        movie = results[0]
+
+        # -------------------------------------------------
+        # POSTER
+        # -------------------------------------------------
+
+        poster_path = movie.get(
+            "poster_path"
+        )
+
+        poster = None
+
+        if poster_path:
+
+            poster = (
+                TMDB_IMAGE_URL +
+                poster_path
+            )
+
+        # -------------------------------------------------
+        # RETURN DETAILS
+        # -------------------------------------------------
+
+        return {
+            "poster": poster,
+            "rating": movie.get(
+                "vote_average"
+            ),
+            "overview": movie.get(
+                "overview"
+            )
+        }
+
+    # -----------------------------------------------------
+    # INTERNET / TIMEOUT ERROR
+    # -----------------------------------------------------
+
+    except requests.exceptions.Timeout:
+
+        return {
+            "poster": None,
+            "rating": None,
+            "overview": None
+        }
+
+    except requests.exceptions.ConnectionError:
+
+        return {
+            "poster": None,
+            "rating": None,
+            "overview": None
+        }
+
+    except Exception:
+
+        return {
+            "poster": None,
+            "rating": None,
+            "overview": None
+        }
+
 
 # =========================================================
 # RECOMMENDATION FUNCTION
 # =========================================================
 
-def recommend(movie_name):
+def recommend_movies(movie_name):
 
-    movie_index = df[
-        df["title"].str.lower()
-        == movie_name.lower()
-    ].index
+    movie_name = movie_name.lower().strip()
 
-    if len(movie_index) == 0:
+    matches = movies[
+        movies["title"]
+        .str.lower()
+        .str.contains(
+            movie_name,
+            na=False
+        )
+    ]
 
-        return []
+    if matches.empty:
 
-    index = movie_index[0]
+        return None
+
+    movie_index = matches.index[0]
 
     scores = list(
         enumerate(
-            similarity[index]
+            similarity[movie_index]
         )
     )
 
@@ -228,14 +403,23 @@ def recommend(movie_name):
 
     recommendations = []
 
-    for i, score in scores[1:11]:
+    for index, score in scores[1:11]:
 
-        recommendations.append(
-            (
-                df.iloc[i]["title"],
-                score
-            )
-        )
+        recommendations.append({
+
+            "title":
+                movies.iloc[index]["title"],
+
+            "score":
+                float(score),
+
+            "overview":
+                movies.iloc[index]["overview"],
+
+            "rating":
+                movies.iloc[index]["vote_average"]
+
+        })
 
     return recommendations
 
@@ -244,157 +428,353 @@ def recommend(movie_name):
 # SIDEBAR
 # =========================================================
 
-with st.sidebar:
+st.sidebar.title("🎬 CineMatch")
 
-    st.header("🎬 CineMatch")
-
-    st.write(
-        "Select a movie and our ML model "
-        "will find similar movies."
-    )
-
-    st.divider()
-
-    st.write("### 🧠 Technology")
-
-    st.write("• Python")
-    st.write("• Pandas")
-    st.write("• Scikit-learn")
-    st.write("• TF-IDF")
-    st.write("• Cosine Similarity")
-    st.write("• Streamlit")
-
-    st.divider()
-
-    st.caption(
-        "BCA Data Science & AI Project"
-    )
-
-# =========================================================
-# MOVIE SELECTION
-# =========================================================
-
-st.markdown(
-    "### 🔍 Choose Your Favorite Movie"
+st.sidebar.markdown(
+    "### Movie Recommendation System"
 )
+
+st.sidebar.info(
+    "Enter a movie name and CineMatch "
+    "will recommend similar movies."
+)
+
+
+# =========================================================
+# TMDB STATUS
+# =========================================================
+
+if TMDB_CREDENTIAL:
+
+    st.sidebar.success(
+        "🔑 TMDB API configured"
+    )
+
+else:
+
+    st.sidebar.warning(
+        "⚠️ TMDB API not configured"
+    )
+
+
+# =========================================================
+# TEST TMDB API
+# =========================================================
+
+if st.sidebar.button(
+    "🔧 Test TMDB API"
+):
+
+    if not TMDB_CREDENTIAL:
+
+        st.sidebar.error(
+            "TMDB API credential not found!"
+        )
+
+    else:
+
+        test_url = (
+            "https://api.themoviedb.org/3/search/movie"
+        )
+
+        test_params = {
+            "query": "Avatar"
+        }
+
+        test_headers = {}
+
+        if TMDB_CREDENTIAL.startswith("eyJ"):
+
+            test_headers["Authorization"] = (
+                "Bearer " + TMDB_CREDENTIAL
+            )
+
+        else:
+
+            test_params["api_key"] = (
+                TMDB_CREDENTIAL
+            )
+
+        try:
+
+            test_response = requests.get(
+                test_url,
+                params=test_params,
+                headers=test_headers,
+                timeout=5
+            )
+
+            st.sidebar.write(
+                "TMDB Status:",
+                test_response.status_code
+            )
+
+            if test_response.status_code == 200:
+
+                st.sidebar.success(
+                    "✅ TMDB API is working!"
+                )
+
+            elif test_response.status_code == 401:
+
+                st.sidebar.error(
+                    "❌ TMDB authentication failed."
+                )
+
+            else:
+
+                st.sidebar.warning(
+                    "⚠️ TMDB returned an error."
+                )
+
+        except requests.exceptions.Timeout:
+
+            st.sidebar.warning(
+                "⚠️ TMDB connection timed out."
+            )
+
+        except requests.exceptions.ConnectionError:
+
+            st.sidebar.warning(
+                "⚠️ Cannot connect to TMDB."
+            )
+
+        except Exception as e:
+
+            st.sidebar.warning(
+                "TMDB test failed."
+            )
+
+
+# =========================================================
+# SEARCH SECTION
+# =========================================================
+
+st.subheader(
+    "🔎 Find Your Next Movie"
+)
+
 
 movie_list = sorted(
-    df["title"]
+    movies["title"]
     .dropna()
     .unique()
-    .tolist()
 )
+
 
 selected_movie = st.selectbox(
     "Select a movie",
     movie_list
 )
 
+
+recommend_button = st.button(
+    "🎯 Recommend Movies",
+    type="primary"
+)
+
+
 # =========================================================
-# BUTTON
+# RECOMMENDATIONS
 # =========================================================
 
-if st.button(
-    "✨ Recommend Movies",
-    use_container_width=True
-):
+if recommend_button:
 
-    recommendations = recommend(
+    recommendations = recommend_movies(
         selected_movie
     )
 
-    if recommendations:
+    if recommendations is None:
 
-        st.divider()
-
-        st.markdown(
-            f"### 🍿 Movies Similar to **{selected_movie}**"
+        st.error(
+            "❌ Movie not found."
         )
-
-        # Statistics
-
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-
-            st.markdown(
-                '<div class="info-box">'
-                '🎬<br><b>10</b><br>'
-                'Recommendations'
-                '</div>',
-                unsafe_allow_html=True
-            )
-
-        with col2:
-
-            st.markdown(
-                '<div class="info-box">'
-                '🧠<br><b>TF-IDF</b><br>'
-                'ML Algorithm'
-                '</div>',
-                unsafe_allow_html=True
-            )
-
-        with col3:
-
-            st.markdown(
-                '<div class="info-box">'
-                '📊<br><b>Cosine</b><br>'
-                'Similarity'
-                '</div>',
-                unsafe_allow_html=True
-            )
-
-        st.write("")
-
-        # Movie Cards
-
-        for number, (movie, score) in enumerate(
-            recommendations,
-            start=1
-        ):
-
-            percentage = round(
-                score * 100,
-                2
-            )
-
-            st.markdown(
-                f"""
-                <div class="movie-card">
-
-                    <div class="movie-number">
-                        MOVIE #{number}
-                    </div>
-
-                    <div class="movie-name">
-                        🎥 {movie}
-                    </div>
-
-                    <div class="similarity">
-                        ⭐ Similarity: {percentage}%
-                    </div>
-
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
 
     else:
 
-        st.error(
-            "Movie not found in the dataset."
+        st.success(
+            f"Movies similar to **{selected_movie}**"
         )
+
+        # -------------------------------------------------
+        # SHOW 5 MOVIES PER ROW
+        # -------------------------------------------------
+
+        for row_start in range(
+            0,
+            len(recommendations),
+            5
+        ):
+
+            row_movies = recommendations[
+                row_start:row_start + 5
+            ]
+
+            columns = st.columns(5)
+
+            for col, movie in zip(
+                columns,
+                row_movies
+            ):
+
+                with col:
+
+                    # -------------------------------------
+                    # GET TMDB DETAILS
+                    # -------------------------------------
+
+                    details = get_movie_details(
+                        movie["title"]
+                    )
+
+                    poster = details.get(
+                        "poster"
+                    )
+
+                    # -------------------------------------
+                    # POSTER
+                    # -------------------------------------
+
+                    if poster:
+
+                        st.image(
+                            poster,
+                            use_container_width=True
+                        )
+
+                    else:
+
+                        st.markdown(
+                            """
+                            <div style="
+                                height:300px;
+                                display:flex;
+                                flex-direction:column;
+                                align-items:center;
+                                justify-content:center;
+                                background:#20242b;
+                                border-radius:10px;
+                                color:#999;
+                                font-size:18px;
+                                text-align:center;
+                            ">
+                                <div style="
+                                    font-size:55px;
+                                    margin-bottom:10px;
+                                ">
+                                    🎬
+                                </div>
+
+                                Poster Not Available
+
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
+
+                    # -------------------------------------
+                    # TITLE
+                    # -------------------------------------
+
+                    st.markdown(
+                        f"""
+                        <div class="movie-title">
+                            {movie["title"]}
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+
+                    # -------------------------------------
+                    # RATING
+                    # -------------------------------------
+
+                    tmdb_rating = details.get(
+                        "rating"
+                    )
+
+                    if (
+                        tmdb_rating is not None
+                        and tmdb_rating > 0
+                    ):
+
+                        st.markdown(
+                            f"""
+                            ⭐ TMDB Rating:
+                            **{tmdb_rating:.1f}/10**
+                            """,
+                            unsafe_allow_html=True
+                        )
+
+                    else:
+
+                        dataset_rating = movie[
+                            "rating"
+                        ]
+
+                        if pd.notna(
+                            dataset_rating
+                        ):
+
+                            st.markdown(
+                                f"""
+                                ⭐ Rating:
+                                **{dataset_rating:.1f}/10**
+                                """,
+                                unsafe_allow_html=True
+                            )
+
+                    # -------------------------------------
+                    # SIMILARITY
+                    # -------------------------------------
+
+                    st.caption(
+                        "🤖 Similarity: "
+                        f"{movie['score'] * 100:.1f}%"
+                    )
+
+                    # -------------------------------------
+                    # DETAILS
+                    # -------------------------------------
+
+                    overview = details.get(
+                        "overview"
+                    )
+
+                    if not overview:
+
+                        overview = movie[
+                            "overview"
+                        ]
+
+                    if overview:
+
+                        with st.expander(
+                            "📖 Details"
+                        ):
+
+                            st.write(
+                                overview
+                            )
+
 
 # =========================================================
 # FOOTER
 # =========================================================
 
+st.markdown("---")
+
 st.markdown(
     """
-    <div class="footer">
-        🎬 CineMatch — Movie Recommendation System<br>
-        Built with Python, Machine Learning & Streamlit
+    <div style="
+        text-align:center;
+        color:#888;
+        padding:10px;
+    ">
+        🎬 CineMatch | AI Powered Movie Recommendation System
+        <br><br>
+        Built with Python, Streamlit,
+        Machine Learning & TMDB API
     </div>
     """,
     unsafe_allow_html=True
